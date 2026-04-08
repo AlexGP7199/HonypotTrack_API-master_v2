@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using HoneypotTrack.Domain.Entities;
 using HoneypotTrack.Infrastrcture.Persistences.Context;
 
@@ -507,14 +508,19 @@ public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware
     private async Task LogSecurityThreat(HttpContext context, AppDbContext dbContext,
         SecurityThreatDetector.ThreatAnalysisResult threat, string? clientIp)
     {
+        var requestBody = await CaptureRequestBodyAsync(context);
+        var userAgent = context.Request.Headers.UserAgent.ToString();
         var securityLog = new AuditLog
         {
             CorrelationId = context.Response.Headers["X-Correlation-Id"].ToString(),
             HttpMethod = context.Request.Method,
             RequestUrl = $"{context.Request.Scheme}://{context.Request.Host}{context.Request.Path}{context.Request.QueryString}",
             RequestPath = context.Request.Path,
+            QueryString = context.Request.QueryString.Value,
+            RequestBody = requestBody,
+            RequestSize = string.IsNullOrEmpty(requestBody) ? null : Encoding.UTF8.GetByteCount(requestBody),
             IpAddress = clientIp,
-            UserAgent = context.Request.Headers.UserAgent.ToString(),
+            UserAgent = userAgent,
             Timestamp = DateTime.UtcNow,
             LocalTimestamp = DateTime.Now,
             StatusCode = 0, // Ser� actualizado despu�s
@@ -524,8 +530,18 @@ public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware
             ErrorMessage = $"[{threat.ThreatCategory}] {threat.Description}",
             ExceptionDetails = $"Pattern: {threat.MatchedPattern}, Severity: {threat.Severity}/10",
             Environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production",
-            ServerName = Environment.MachineName
+            ServerName = Environment.MachineName,
+            Referer = context.Request.Headers.Referer.ToString(),
+            Origin = context.Request.Headers.Origin.ToString(),
+            SessionId = context.Request.Headers["X-Session-Id"].FirstOrDefault() ?? context.Session?.Id
         };
+
+        if (string.IsNullOrWhiteSpace(securityLog.CorrelationId))
+        {
+            securityLog.CorrelationId = context.TraceIdentifier;
+        }
+
+        ParseUserAgent(userAgent, securityLog);
 
         try
         {
@@ -554,6 +570,183 @@ public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware
         }
 
         return context.Connection.RemoteIpAddress?.ToString();
+    }
+
+    private static async Task<string?> CaptureRequestBodyAsync(HttpContext context)
+    {
+        if (context.Request.ContentLength is null or 0 || !context.Request.Body.CanRead)
+        {
+            return null;
+        }
+
+        context.Request.EnableBuffering();
+        context.Request.Body.Position = 0;
+
+        using var reader = new StreamReader(context.Request.Body, Encoding.UTF8, leaveOpen: true);
+        var body = await reader.ReadToEndAsync();
+        context.Request.Body.Position = 0;
+
+        return SanitizeBody(body);
+    }
+
+    private static string? SanitizeBody(string? body)
+    {
+        if (string.IsNullOrEmpty(body)) return body;
+
+        try
+        {
+            var sensitiveFields = new[] { "password", "token", "secret", "apikey", "authorization" };
+            using var json = JsonDocument.Parse(body);
+            using var stream = new MemoryStream();
+            using var writer = new Utf8JsonWriter(stream);
+
+            SanitizeJsonElement(json.RootElement, writer, sensitiveFields);
+            writer.Flush();
+
+            return Encoding.UTF8.GetString(stream.ToArray());
+        }
+        catch
+        {
+            return body.Length <= 5000 ? body : body[..5000] + "...[TRUNCATED]";
+        }
+    }
+
+    private static void SanitizeJsonElement(JsonElement element, Utf8JsonWriter writer, string[] sensitiveFields)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                writer.WriteStartObject();
+                foreach (var property in element.EnumerateObject())
+                {
+                    writer.WritePropertyName(property.Name);
+                    if (sensitiveFields.Any(f => property.Name.Contains(f, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        writer.WriteStringValue("***HIDDEN***");
+                    }
+                    else
+                    {
+                        SanitizeJsonElement(property.Value, writer, sensitiveFields);
+                    }
+                }
+                writer.WriteEndObject();
+                break;
+
+            case JsonValueKind.Array:
+                writer.WriteStartArray();
+                foreach (var item in element.EnumerateArray())
+                {
+                    SanitizeJsonElement(item, writer, sensitiveFields);
+                }
+                writer.WriteEndArray();
+                break;
+
+            default:
+                element.WriteTo(writer);
+                break;
+        }
+    }
+
+    private static void ParseUserAgent(string? userAgent, AuditLog auditLog)
+    {
+        if (string.IsNullOrEmpty(userAgent)) return;
+
+        if (userAgent.Contains("Edg/", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.Browser = "Microsoft Edge";
+            auditLog.BrowserVersion = ExtractVersion(userAgent, @"Edg/([\d.]+)");
+        }
+        else if (userAgent.Contains("Chrome/", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.Browser = "Google Chrome";
+            auditLog.BrowserVersion = ExtractVersion(userAgent, @"Chrome/([\d.]+)");
+        }
+        else if (userAgent.Contains("Firefox/", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.Browser = "Mozilla Firefox";
+            auditLog.BrowserVersion = ExtractVersion(userAgent, @"Firefox/([\d.]+)");
+        }
+        else if (userAgent.Contains("Safari/", StringComparison.OrdinalIgnoreCase) &&
+                 !userAgent.Contains("Chrome", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.Browser = "Safari";
+            auditLog.BrowserVersion = ExtractVersion(userAgent, @"Version/([\d.]+)");
+        }
+        else if (userAgent.Contains("PostmanRuntime", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.Browser = "Postman";
+            auditLog.BrowserVersion = ExtractVersion(userAgent, @"PostmanRuntime/([\d.]+)");
+        }
+        else if (userAgent.Contains("Insomnia", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.Browser = "Insomnia";
+        }
+        else if (userAgent.Contains("curl", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.Browser = "cURL";
+        }
+        else if (userAgent.Contains("Mozilla/", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.Browser = "Browser";
+        }
+        else
+        {
+            auditLog.Browser = "Unknown";
+        }
+
+        if (userAgent.Contains("Windows NT 10", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.OperatingSystem = "Windows 10/11";
+        }
+        else if (userAgent.Contains("Windows", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.OperatingSystem = "Windows";
+        }
+        else if (userAgent.Contains("Mac OS X", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.OperatingSystem = "macOS";
+        }
+        else if (userAgent.Contains("Linux", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.OperatingSystem = "Linux";
+        }
+        else if (userAgent.Contains("Android", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.OperatingSystem = "Android";
+        }
+        else if (userAgent.Contains("iPhone", StringComparison.OrdinalIgnoreCase) ||
+                 userAgent.Contains("iPad", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.OperatingSystem = "iOS";
+        }
+
+        if (userAgent.Contains("Mobile", StringComparison.OrdinalIgnoreCase) ||
+            userAgent.Contains("Android", StringComparison.OrdinalIgnoreCase) ||
+            userAgent.Contains("iPhone", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.DeviceType = "Mobile";
+        }
+        else if (userAgent.Contains("Tablet", StringComparison.OrdinalIgnoreCase) ||
+                 userAgent.Contains("iPad", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.DeviceType = "Tablet";
+        }
+        else if (userAgent.Contains("PostmanRuntime", StringComparison.OrdinalIgnoreCase) ||
+                 userAgent.Contains("Insomnia", StringComparison.OrdinalIgnoreCase) ||
+                 userAgent.Contains("curl", StringComparison.OrdinalIgnoreCase))
+        {
+            auditLog.DeviceType = "API Client";
+        }
+        else
+        {
+            auditLog.DeviceType = "Desktop";
+        }
+    }
+
+    private static string? ExtractVersion(string userAgent, string pattern)
+    {
+        var match = Regex.Match(userAgent, pattern);
+        return match.Success ? match.Groups[1].Value : null;
     }
 
     public record BlockedIpInfo
