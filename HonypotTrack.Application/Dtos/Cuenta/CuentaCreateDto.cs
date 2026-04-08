@@ -1,0 +1,16 @@
+using System.ComponentModel.DataAnnotations;
+
+namespace HonypotTrack.Application.Dtos.Cuenta;
+
+public class CuentaCreateDto
+{
+    [Required(ErrorMessage = "El UserId es requerido")]
+    public int UserId { get; set; }
+
+    [Required(ErrorMessage = "El nombre de la cuenta es requerido")]
+    [StringLength(50)]
+    public string AccountName { get; set; } = null!;
+
+    [StringLength(3)]
+    public string Currency { get; set; } = "USD";
+}

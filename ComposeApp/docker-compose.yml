@@ -1,0 +1,24 @@
+services:
+  honeypottrack-api:
+    image: moonxz/honeypottrack-api:latest
+    container_name: honeypottrack-api
+    ports:
+      - "5273:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: ${DEFAULT_CONNECTION}
+      ConnectionStrings__HoneypotConnection: ${HONEYPOT_CONNECTION}
+      WatchDog__SetExternalDbConnString: ${WATCHDOG_CONNECTION}
+    restart: unless-stopped
+
+  app-tesis-frontend:
+    image: moonxz/app-tesis-frontend:latest
+    container_name: app-tesis-frontend
+    ports:
+      - "4200:80"
+    environment:
+      API_URL: ${FRONTEND_API_URL}
+    depends_on:
+      - honeypottrack-api
+    restart: unless-stopped

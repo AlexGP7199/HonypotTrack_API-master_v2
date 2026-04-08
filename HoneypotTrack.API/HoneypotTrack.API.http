@@ -1,0 +1,6 @@
+@HoneypotTrack.API_HostAddress = http://localhost:5273
+
+GET {{HoneypotTrack.API_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

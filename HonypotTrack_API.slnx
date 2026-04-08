@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="HoneypotTrack.API/HoneypotTrack.API.csproj" />
+    <Project Path="HoneypotTrack.Domain/HoneypotTrack.Domain.csproj" />
+    <Project Path="HoneypotTrack.Infrastrcture/HoneypotTrack.Infrastrcture.csproj" />
+    <Project Path="HonypotTrack.Application/HonypotTrack.Application.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="HoneypotTrack.Test/HoneypotTrack.Test.csproj" />
+  </Folder>
+</Solution>
