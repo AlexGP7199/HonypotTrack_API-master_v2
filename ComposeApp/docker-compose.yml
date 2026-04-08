@@ -1,6 +1,6 @@
 services:
   honeypottrack-api:
-    image: moonxz/honeypottrack-api:latest
+    image: moonxz/honeypottrack-api:v2 # esta la latest y la v2 ( la v2 es la mas reciente y actualizada )
     container_name: honeypottrack-api
     ports:
       - "5273:8080"

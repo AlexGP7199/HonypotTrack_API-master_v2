@@ -348,9 +348,9 @@ public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware
         var requestPath = context.Request.Path.Value?.ToLowerInvariant() ?? string.Empty;
         var isAuthEndpoint = _honeypotTriggerEndpoints.Any(e => requestPath.Contains(e));
 
-        // Analizar URL y Query String
+        // Analizar URL y query params reales de la request
         fieldsToAnalyze["URL"] = context.Request.Path.Value;
-        fieldsToAnalyze["QueryString"] = context.Request.QueryString.Value;
+        AddQueryParametersToAnalysis(fieldsToAnalyze, context.Request.Query, "Query");
 
         // Analizar Headers sospechosos
         foreach (var header in context.Request.Headers)
@@ -360,6 +360,8 @@ public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware
                 fieldsToAnalyze[$"Header:{header.Key}"] = header.Value.ToString();
             }
         }
+
+        AddRefererFieldsToAnalysis(fieldsToAnalyze, context.Request.Headers.Referer.ToString());
 
         // Analizar Request Body (si es JSON)
         if (context.Request.ContentType?.Contains("application/json") == true && 
@@ -398,6 +400,53 @@ public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware
         threats.AddRange(SecurityThreatDetector.AnalyzeMultipleFields(fieldsToAnalyze));
 
         return threats;
+    }
+
+    private static void AddQueryParametersToAnalysis(
+        Dictionary<string, string?> fieldsToAnalyze,
+        IEnumerable<KeyValuePair<string, Microsoft.Extensions.Primitives.StringValues>> queryCollection,
+        string prefix)
+    {
+        foreach (var query in queryCollection)
+        {
+            var key = string.IsNullOrWhiteSpace(query.Key) ? "unknown" : query.Key;
+            var values = query.Value.ToArray();
+
+            if (values.Length == 0)
+            {
+                continue;
+            }
+
+            for (var i = 0; i < values.Length; i++)
+            {
+                var fieldKey = values.Length == 1
+                    ? $"{prefix}:{key}"
+                    : $"{prefix}:{key}[{i}]";
+                fieldsToAnalyze[fieldKey] = values[i];
+            }
+        }
+    }
+
+    private static void AddRefererFieldsToAnalysis(Dictionary<string, string?> fieldsToAnalyze, string? referer)
+    {
+        if (string.IsNullOrWhiteSpace(referer) || !Uri.TryCreate(referer, UriKind.Absolute, out var refererUri))
+        {
+            return;
+        }
+
+        var refererPath = refererUri.AbsolutePath;
+        if (!string.IsNullOrWhiteSpace(refererPath) && refererPath != "/")
+        {
+            fieldsToAnalyze["Referer:Path"] = refererPath;
+        }
+
+        if (string.IsNullOrWhiteSpace(refererUri.Query))
+        {
+            return;
+        }
+
+        var refererQuery = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(refererUri.Query);
+        AddQueryParametersToAnalysis(fieldsToAnalyze, refererQuery, "RefererQuery");
     }
 
     private bool ShouldForceHoneypotForTesting(HttpContext context, bool isDevelopment)
@@ -550,8 +599,6 @@ public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware
             "X-Forwarded-Host",
             "X-Original-URL",
             "X-Rewrite-URL",
-            "Referer",
-            "User-Agent",
             "Cookie"
         };
 

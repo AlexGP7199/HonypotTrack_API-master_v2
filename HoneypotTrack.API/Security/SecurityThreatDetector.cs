@@ -8,7 +8,7 @@ namespace HoneypotTrack.API.Security;
 public static partial class SecurityThreatDetector
 {
     /// <summary>
-    /// Resultado del análisis de seguridad
+    /// Resultado del anï¿½lisis de seguridad
     /// </summary>
     public record ThreatAnalysisResult
     {
@@ -44,13 +44,13 @@ public static partial class SecurityThreatDetector
         var commandResult = DetectCommandInjection(input);
         if (commandResult.IsThreatDetected) return commandResult;
 
-        // A03:2021 - Injection (LDAP Injection)
-        var ldapResult = DetectLdapInjection(input);
-        if (ldapResult.IsThreatDetected) return ldapResult;
-
         // A03:2021 - Injection (XSS - Cross-Site Scripting)
         var xssResult = DetectXss(input);
         if (xssResult.IsThreatDetected) return xssResult;
+
+        // A03:2021 - Injection (LDAP Injection)
+        var ldapResult = DetectLdapInjection(input);
+        if (ldapResult.IsThreatDetected) return ldapResult;
 
         // A03:2021 - Injection (XXE - XML External Entity)
         var xxeResult = DetectXxe(input);
@@ -64,7 +64,7 @@ public static partial class SecurityThreatDetector
     }
 
     /// <summary>
-    /// Analiza múltiples campos y retorna todas las amenazas encontradas
+    /// Analiza mï¿½ltiples campos y retorna todas las amenazas encontradas
     /// </summary>
     public static IEnumerable<ThreatAnalysisResult> AnalyzeMultipleFields(Dictionary<string, string?> fields)
     {
@@ -205,13 +205,13 @@ public static partial class SecurityThreatDetector
     {
         var commandPatterns = new[]
         {
-            // Shell operators
-            @"[|;&`$]",
             // Command substitution
             @"\$\([^)]+\)",
             @"`[^`]+`",
+            // Shell chaining followed by an actual command
+            @"(?:\||;|&&|\|\|)\s*(cat|ls|dir|pwd|whoami|id|uname|wget|curl|nc|netcat|bash|sh|cmd|powershell|ping|nslookup|dig|traceroute|telnet|ftp|ssh)\b",
             // Common dangerous commands
-            @"\b(cat|ls|dir|pwd|whoami|id|uname|wget|curl|nc|netcat|bash|sh|cmd|powershell)\b",
+            @"(?:^|[\s'""])(cat|ls|dir|pwd|whoami|id|uname|wget|curl|nc|netcat|bash|sh|cmd|powershell)(?:\s+[-/\w\.]|$)",
             // File operations
             @"\b(rm|del|copy|move|cp|mv)\s+",
             // Network commands
@@ -222,7 +222,9 @@ public static partial class SecurityThreatDetector
             // Environment variables
             @"\$\{?[A-Z_]+\}?",
             // Windows specific
-            @"\b(type|more|net\s+user|net\s+localgroup)\b"
+            @"\b(type|more|net\s+user|net\s+localgroup)\b",
+            // PowerShell / shell execution helpers
+            @"\b(invoke-expression|iex|start-process|cmd\s*/c|powershell\s+-)\b"
         };
 
         foreach (var pattern in commandPatterns)
@@ -348,8 +350,6 @@ public static partial class SecurityThreatDetector
     {
         var ldapPatterns = new[]
         {
-            // LDAP special characters
-            @"[()\\*\x00]",
             // LDAP filter injection
             @"\(\|",
             @"\(&",
@@ -358,6 +358,10 @@ public static partial class SecurityThreatDetector
             @"\b(objectClass|cn|uid|sn|mail)\s*=\s*\*",
             // Wildcard abuse
             @"\*\)\(",
+            // Escaped LDAP special characters in suspicious context
+            @"\\[(),=*]",
+            // Null byte injection
+            @"\x00",
         };
 
         foreach (var pattern in ldapPatterns)
@@ -467,3 +471,4 @@ public static partial class SecurityThreatDetector
 
     #endregion
 }
+
