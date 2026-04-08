@@ -101,6 +101,30 @@ public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware
 
                 if (honeypotResult.Success)
                 {
+                    if (!isAuthEndpoint)
+                    {
+                        context.Items["IssuedHoneypotToken"] = honeypotResult.Token;
+                        context.Response.Headers["X-Security-Warning"] = "Suspicious activity detected";
+                        context.Response.Headers["X-Honeypot-Activated"] = "true";
+
+                        _logger.LogWarning(
+                            "?? SESIÓN HONEYPOT EMITIDA SIN ALTERAR RESPONSE para endpoint no-auth {Path} - IP: {Ip}",
+                            requestPath, clientIp);
+
+                        await _next(context);
+
+                        var capturedResponseBody = context.Items.TryGetValue(CapturedResponseBodyItemKey, out var nonAuthResponseBody)
+                            ? nonAuthResponseBody as string
+                            : null;
+
+                        await FinalizeAndPersistThreatLogsAsync(
+                            dbContext,
+                            pendingThreatLogs,
+                            context.Response.StatusCode,
+                            capturedResponseBody);
+                        return;
+                    }
+
                     var responsePayload = new
                     {
                         isSuccess = true,
@@ -162,7 +186,7 @@ public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware
 
             await _next(context);
 
-            var capturedResponseBody = context.Items.TryGetValue(CapturedResponseBodyItemKey, out var responseBody)
+            var finalResponseBody = context.Items.TryGetValue(CapturedResponseBodyItemKey, out var responseBody)
                 ? responseBody as string
                 : null;
 
@@ -170,7 +194,7 @@ public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware
                 dbContext,
                 pendingThreatLogs,
                 context.Response.StatusCode,
-                capturedResponseBody);
+                finalResponseBody);
             return;
         }
 
