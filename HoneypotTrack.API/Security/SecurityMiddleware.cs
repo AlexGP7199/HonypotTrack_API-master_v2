@@ -12,6 +12,7 @@ namespace HoneypotTrack.API.Security;
 /// </summary>
 public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware> logger, IConfiguration configuration, ISecurityAlertService alertService)
 {
+    private const string CapturedResponseBodyItemKey = "AuditMiddleware.CapturedResponseBody";
     private readonly RequestDelegate _next = next;
     private readonly ILogger<SecurityMiddleware> _logger = logger;
     private readonly IConfiguration _configuration = configuration;
@@ -57,11 +58,12 @@ public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware
         if (detectedThreats.Any())
         {
             var primaryThreat = detectedThreats.First();
+            var pendingThreatLogs = new List<AuditLog>();
 
             // Registrar las amenazas (SIEMPRE, incluso en whitelist para auditor�a)
             foreach (var threat in detectedThreats)
             {
-                await LogSecurityThreat(context, dbContext, threat, clientIp);
+                pendingThreatLogs.Add(await CreateSecurityThreatLogAsync(context, threat, clientIp));
                 await RaiseSecurityAlert(threat, clientIp, context);
             }
 
@@ -99,10 +101,7 @@ public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware
 
                 if (honeypotResult.Success)
                 {
-                    // Devolver respuesta de "login exitoso" falsa
-                    context.Response.StatusCode = StatusCodes.Status200OK;
-                    context.Response.ContentType = "application/json";
-                    await context.Response.WriteAsJsonAsync(new
+                    var responsePayload = new
                     {
                         isSuccess = true,
                         message = isAuthEndpoint ? "Login exitoso" : "Acceso concedido",
@@ -120,20 +119,37 @@ public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware
                             },
                             sessionType = isAuthEndpoint ? "honeypot-auth" : "honeypot-threat"
                         }
-                    });
+                    };
+
+                    // Devolver respuesta de "login exitoso" falsa
+                    context.Response.StatusCode = StatusCodes.Status200OK;
+                    context.Response.ContentType = "application/json";
+                    await FinalizeAndPersistThreatLogsAsync(
+                        dbContext,
+                        pendingThreatLogs,
+                        context.Response.StatusCode,
+                        JsonSerializer.Serialize(responsePayload));
+                    await context.Response.WriteAsJsonAsync(responsePayload);
                     return; // No continuar al controller real
                 }
 
                 if (isDevelopment)
                 {
-                    context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-                    context.Response.ContentType = "application/json";
-                    await context.Response.WriteAsJsonAsync(new
+                    var responsePayload = new
                     {
                         isSuccess = false,
                         message = "Se detectó una amenaza, pero falló la activación del honeypot.",
                         detail = honeypotResult.FailureReason ?? "Razón no disponible"
-                    });
+                    };
+
+                    context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                    context.Response.ContentType = "application/json";
+                    await FinalizeAndPersistThreatLogsAsync(
+                        dbContext,
+                        pendingThreatLogs,
+                        context.Response.StatusCode,
+                        JsonSerializer.Serialize(responsePayload));
+                    await context.Response.WriteAsJsonAsync(responsePayload);
                     return;
                 }
             }
@@ -143,6 +159,19 @@ public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware
 
             // Agregar header indicando detecci�n de amenaza
             context.Response.Headers["X-Security-Warning"] = "Suspicious activity detected";
+
+            await _next(context);
+
+            var capturedResponseBody = context.Items.TryGetValue(CapturedResponseBodyItemKey, out var responseBody)
+                ? responseBody as string
+                : null;
+
+            await FinalizeAndPersistThreatLogsAsync(
+                dbContext,
+                pendingThreatLogs,
+                context.Response.StatusCode,
+                capturedResponseBody);
+            return;
         }
 
         if (ShouldForceHoneypotForTesting(context, isDevelopment) &&
@@ -505,7 +534,7 @@ public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware
         return suspiciousHeaders.Contains(headerName, StringComparer.OrdinalIgnoreCase);
     }
 
-    private async Task LogSecurityThreat(HttpContext context, AppDbContext dbContext,
+    private async Task<AuditLog> CreateSecurityThreatLogAsync(HttpContext context,
         SecurityThreatDetector.ThreatAnalysisResult threat, string? clientIp)
     {
         var requestBody = await CaptureRequestBodyAsync(context);
@@ -543,22 +572,45 @@ public class SecurityMiddleware(RequestDelegate next, ILogger<SecurityMiddleware
 
         ParseUserAgent(userAgent, securityLog);
 
-        try
-        {
-            dbContext.AuditLogs.Add(securityLog);
-            await dbContext.SaveChangesAsync();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error guardando log de seguridad");
-        }
-
         _logger.LogWarning(
             "?? AMENAZA DETECTADA - Tipo: {ThreatType}, Categor�a: {Category}, IP: {Ip}, Severidad: {Severity}/10",
             threat.ThreatType,
             threat.ThreatCategory,
             clientIp,
             threat.Severity);
+
+        return securityLog;
+    }
+
+    private async Task FinalizeAndPersistThreatLogsAsync(
+        AppDbContext dbContext,
+        List<AuditLog> pendingThreatLogs,
+        int statusCode,
+        string? responseBody)
+    {
+        if (pendingThreatLogs.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var pendingThreatLog in pendingThreatLogs)
+        {
+            pendingThreatLog.StatusCode = statusCode;
+            pendingThreatLog.ResponseBody = responseBody;
+            pendingThreatLog.ResponseSize = string.IsNullOrEmpty(responseBody)
+                ? null
+                : Encoding.UTF8.GetByteCount(responseBody);
+        }
+
+        try
+        {
+            dbContext.AuditLogs.AddRange(pendingThreatLogs);
+            await dbContext.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error guardando log de seguridad");
+        }
     }
 
     private static string? GetClientIp(HttpContext context)

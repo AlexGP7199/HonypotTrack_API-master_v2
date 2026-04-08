@@ -10,6 +10,7 @@ namespace HoneypotTrack.API.Middlewares;
 
 public partial class AuditMiddleware(RequestDelegate next, ILogger<AuditMiddleware> logger)
 {
+    private const string CapturedResponseBodyItemKey = "AuditMiddleware.CapturedResponseBody";
     private readonly RequestDelegate _next = next;
     private readonly ILogger<AuditMiddleware> _logger = logger;
 
@@ -74,6 +75,7 @@ public partial class AuditMiddleware(RequestDelegate next, ILogger<AuditMiddlewa
                     auditLog.ResponseBody = "[Response too large - truncated]";
                 }
                 auditLog.ResponseSize = responseBytes.Length;
+                context.Items[CapturedResponseBodyItemKey] = auditLog.ResponseBody;
 
                 // DESPU�S enviar la respuesta al cliente
                 // Restaurar el stream original ANTES de escribir
