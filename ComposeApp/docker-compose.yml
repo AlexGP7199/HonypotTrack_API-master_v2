@@ -1,6 +1,6 @@
 services:
   honeypottrack-api:
-    image: moonxz/honeypottrack-api:v2 # esta la latest y la v2 ( la v2 es la mas reciente y actualizada )
+    image: moonxz/honeypottrack-api:v3 # esta la latest , v2 y v3 ( la v3 es la mas reciente y actualizada )
     container_name: honeypottrack-api
     ports:
       - "5273:8080"
@@ -13,7 +13,7 @@ services:
     restart: unless-stopped
 
   app-tesis-frontend:
-    image: moonxz/app-tesis-frontend:latest
+    image: moonxz/app-tesis-frontend:v2 # esta la latest y v2 ( la v2 es la mas reciente y actualizada )
     container_name: app-tesis-frontend
     ports:
       - "4200:80"
